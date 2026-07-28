@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const {
   buildFallbackTemplate,
   buildMissingRanges,
@@ -33,6 +34,27 @@ const {
   toDurationMs,
   toPlayCount,
 } = require("../gem-sort.js");
+
+test("runtime dataset keys match the Gem Sort CSS attribute namespace", () => {
+  const source = fs.readFileSync(require.resolve("../gem-sort.js"), "utf8");
+
+  assert.doesNotMatch(
+    source,
+    /dataset\.streamRank(?:Grid|HiddenColumn|SortActive|SortKey|TrackUri)/,
+  );
+  [
+    "gemSortGrid",
+    "gemSortHiddenColumn",
+    "gemSortSortActive",
+    "gemSortSortKey",
+    "gemSortTrackUri",
+  ].forEach((key) => assert.match(source, new RegExp(`dataset\\.${key}`)));
+  [
+    "data-gem-sort-grid",
+    "data-gem-sort-hidden-column",
+    "data-gem-sort-sort-key",
+  ].forEach((attribute) => assert.match(source, new RegExp(attribute)));
+});
 
 function encodeTaggedVarint(value) {
   let remaining = BigInt(value);

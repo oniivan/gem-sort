@@ -24,7 +24,7 @@
 })(typeof window !== "undefined" ? window : null, function createStreamRankApi() {
   "use strict";
 
-  const VERSION = "0.4.1";
+  const VERSION = "0.4.2";
   const GLOBAL_KEY = "__spotifyGemSort";
   const STYLE_ID = "spotify-gem-sort-style";
   const GRID_SELECTOR =
@@ -968,7 +968,7 @@
       plays.type = "button";
       plays.className =
         "spotify-gem-sort-plays spotify-gem-sort-sort-button";
-      plays.dataset.streamRankSortKey = "plays";
+      plays.dataset.gemSortSortKey = "plays";
       plays.setAttribute("aria-label", "Sort playlist view by Spotify plays");
       plays.setAttribute("aria-pressed", "false");
       plays.textContent = "Plays";
@@ -981,7 +981,7 @@
       rank.type = "button";
       rank.className =
         "spotify-gem-sort-rank spotify-gem-sort-sort-button";
-      rank.dataset.streamRankSortKey = "rank";
+      rank.dataset.gemSortSortKey = "rank";
       rank.setAttribute(
         "aria-label",
         "Sort playlist view by primary artist Top 10 rank",
@@ -997,7 +997,7 @@
           if (grid) {
             handleMetricSortRequest(
               grid,
-              button.dataset.streamRankSortKey,
+              button.dataset.gemSortSortKey,
             );
           }
         });
@@ -1036,7 +1036,7 @@
     function renumberCells(container, role) {
       let visibleIndex = 0;
       getDirectCells(container, role).forEach((cell) => {
-        if (cell.dataset.streamRankHiddenColumn) {
+        if (cell.dataset.gemSortHiddenColumn) {
           cell.removeAttribute("aria-colindex");
           return;
         }
@@ -1050,9 +1050,9 @@
       const hidden = new Set(hiddenColumnIndexes);
       cells.forEach((cell, index) => {
         if (hidden.has(index)) {
-          cell.dataset.streamRankHiddenColumn = "true";
+          cell.dataset.gemSortHiddenColumn = "true";
         } else {
-          delete cell.dataset.streamRankHiddenColumn;
+          delete cell.dataset.gemSortHiddenColumn;
         }
       });
     }
@@ -1061,7 +1061,7 @@
       grid
         .querySelectorAll("[data-gem-sort-hidden-column]")
         .forEach((cell) => {
-          delete cell.dataset.streamRankHiddenColumn;
+          delete cell.dataset.gemSortHiddenColumn;
         });
     }
 
@@ -1134,7 +1134,7 @@
       if (!grid.__streamRankDropGuard) {
         const dropGuard = (event) => {
           const guarded =
-            grid.dataset.streamRankSortActive === "true" ||
+            grid.dataset.gemSortSortActive === "true" ||
             sortLoading?.grid === grid;
           if (!guarded) return;
           event.stopImmediatePropagation();
@@ -1251,7 +1251,7 @@
     }
 
     function resetCell(cell, info) {
-      cell.dataset.streamRankTrackUri = info?.trackUri || "";
+      cell.dataset.gemSortTrackUri = info?.trackUri || "";
       cell.__streamRankState = {
         trackUri: info?.trackUri || "",
         artistName: info?.artistName || "",
@@ -1300,7 +1300,7 @@
       if (
         destroyed ||
         !cell.isConnected ||
-        cell.dataset.streamRankTrackUri !== expectedUri ||
+        cell.dataset.gemSortTrackUri !== expectedUri ||
         cell.__streamRankState?.trackUri !== expectedUri
       ) {
         return false;
@@ -2528,7 +2528,7 @@
         session.playerPlayHandle?.restore();
         session.playerPlayHandle = null;
         session.methodHandle?.restore();
-        delete session.grid.dataset.streamRankSortActive;
+        delete session.grid.dataset.gemSortSortActive;
         updateSortHeader(session.grid);
         if (invalidate && session.grid.isConnected) {
           invalidateSortedGrid(session.grid, scrollToTop);
@@ -2654,7 +2654,7 @@
         } else {
           sortSession = session;
         }
-        session.grid.dataset.streamRankSortActive = "true";
+        session.grid.dataset.gemSortSortActive = "true";
         sortLoading = null;
         updateSortHeader(session.grid);
         invalidateSortedGrid(session.grid);
@@ -2678,11 +2678,11 @@
 
     function populateCell(cell, info) {
       if (!info) {
-        if (cell.dataset.streamRankTrackUri !== "") resetCell(cell, null);
+        if (cell.dataset.gemSortTrackUri !== "") resetCell(cell, null);
         return;
       }
 
-      if (cell.dataset.streamRankTrackUri === info.trackUri) return;
+      if (cell.dataset.gemSortTrackUri === info.trackUri) return;
       resetCell(cell, info);
 
       if (info.isLocal || !info.trackUri.startsWith("spotify:track:")) {
@@ -2832,7 +2832,7 @@
       const headerRow = getHeaderRow(grid);
       if (!headerRow) return;
 
-      grid.dataset.streamRankGrid = "true";
+      grid.dataset.gemSortGrid = "true";
       const nativeHeaders = getDirectCells(headerRow, "columnheader").filter(
         (cell) => !cell.classList.contains("spotify-gem-sort-header"),
       );
@@ -3037,8 +3037,8 @@
       }
       delete grid.__streamRankBaseTemplate;
       delete grid.__streamRankDataHasMeaningfulDates;
-      delete grid.dataset.streamRankGrid;
-      delete grid.dataset.streamRankSortActive;
+      delete grid.dataset.gemSortGrid;
+      delete grid.dataset.gemSortSortActive;
 
       if (grid.__streamRankDropGuard) {
         grid.removeEventListener(
