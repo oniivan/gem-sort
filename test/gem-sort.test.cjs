@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const {
   buildFallbackTemplate,
+  buildMetricRecords,
   buildMissingRanges,
   buildPlaylistTemplate,
   buildSortedPlaybackContext,
@@ -26,8 +27,10 @@ const {
   normalizeTrackName,
   parseVarint,
   preferPlayCount,
+  pruneTimedCache,
   removeNamedTemplateTrack,
   remapSortedPlaybackOptions,
+  selectMetricRecordValues,
   sortMetricRecords,
   spotifyUriFromHref,
   stripTemplateColumn,
@@ -209,6 +212,53 @@ test("metric sorting is numeric, stable, and keeps unavailable values last", () 
     records.map((record) => record.sourceIndex),
     [0, 1, 2, 3],
   );
+});
+
+test("large sorts reuse one canonical record graph across both metrics", () => {
+  const source = fs.readFileSync(require.resolve("../gem-sort.js"), "utf8");
+  const items = Array.from({ length: 3_000 }, (_, index) => ({
+    artists: [
+      {
+        name: `Artist ${index % 300}`,
+        uri: `spotify:artist:${String(index % 300).padStart(22, "0")}`,
+      },
+    ],
+    durationMs: 180_000 + index,
+    name: `Track ${index}`,
+    uri: `spotify:track:${String(index).padStart(22, "0")}`,
+  }));
+  const records = buildMetricRecords(items);
+  const firstInfo = records[0].info;
+
+  records.forEach((record, index) => {
+    record.plays = index * 10;
+    record.rank = index % 11 === 0 ? null : (index % 10) + 1;
+  });
+
+  assert.equal(records.length, items.length);
+  assert.strictEqual(selectMetricRecordValues(records, "plays"), records);
+  assert.equal(records[2_999].value, 29_990);
+  assert.strictEqual(records[0].info, firstInfo);
+  assert.strictEqual(selectMetricRecordValues(records, "rank"), records);
+  assert.equal(records[1].value, 2);
+  assert.equal(records[11].value, null);
+  assert.strictEqual(records[0].info, firstInfo);
+  assert.doesNotMatch(source, /\b(?:metricRecords|sourceItems)\b/);
+});
+
+test("timed cache pruning removes expiry before enforcing the LRU cap", () => {
+  const cache = new Map([
+    ["expired", { expiresAt: 100, value: "stale" }],
+    ["live-old", { expiresAt: 500, value: "older" }],
+    ["live-new", { expiresAt: 600, value: "newer" }],
+  ]);
+
+  assert.deepEqual(pruneTimedCache(cache, 100, 1), {
+    evicted: 1,
+    expired: 1,
+    remaining: 1,
+  });
+  assert.deepEqual(Array.from(cache.keys()), ["live-new"]);
 });
 
 test("full-list pagination reuses the captured page without leaving gaps", () => {

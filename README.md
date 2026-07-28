@@ -87,6 +87,45 @@ Capture, playlist-page, and metric requests are time-limited. Spotify's private
 interfaces do not expose a transport abort here, however, so a request already
 sent may still finish internally after Gem Sort has stopped waiting for it.
 
+## Memory lifecycle
+
+Gem Sort does not write track data to localStorage, IndexedDB, files, or an
+external database. Sort state and reusable metadata live only in Spotify's
+renderer RAM and disappear when Spotify closes.
+
+For playlists with thousands of tracks, one active sort session keeps:
+
+- one canonical record per source item, reused for both Plays and Top 10;
+- one array of references in the current displayed order; and
+- a playback context only after playback starts from the sorted view.
+
+The session is released when the sort is cleared, the route or filter changes,
+the playlist changes, or the extension is destroyed. Switching between Plays
+and Top 10 reuses the same normalized records instead of retaining a second
+full record graph.
+
+Reusable metadata is stored in touch-ordered, size-capped memory caches:
+
+| Cache | Fresh for | Maximum entries |
+| --- | ---: | ---: |
+| Track play counts | 1 hour | 20,000 |
+| Primary-artist Top 10 | 30 minutes | 5,000 |
+| Album fallback results | 6 hours | 5,000 |
+| Failed lookup result | 2 minutes | Uses the relevant cache's cap |
+
+Writes enforce the caps in constant time by evicting the least-recently used
+entry. While any cache is nonempty, Gem Sort also schedules one maintenance
+pass every five minutes. The pass is deferred to the renderer's idle queue
+when available, removes expired entries across all caches, and then rechecks
+the caps. This avoids a full cache scan for every track in a large sort while
+preventing expired entries from lingering through an unusually long Spotify
+session.
+
+`window.__spotifyGemSort.getStatus()` reports live sizes, expired entries,
+limits, cumulative expiry/LRU removals, maintenance timing, and which metrics
+the active sort has loaded. `window.__spotifyGemSort.pruneCaches()` runs the
+same maintenance immediately and returns its removal summary.
+
 ## Installation
 
 Gem Sort is not yet listed in Spicetify Marketplace.
@@ -233,7 +272,8 @@ The shipped extension is dependency-free. Its Node test suite covers exported
 helpers for number decoding and formatting, playlist template transforms,
 stable metric ordering, pagination-range construction, response parsing,
 concurrency limiting, conservative relink matching, playback-context shaping,
-URI handling, API method-owner lookup, and route eligibility.
+URI handling, API method-owner lookup, route eligibility, canonical
+large-playlist metric records, and timed LRU cache pruning.
 
 ```sh
 npm test

@@ -24,7 +24,7 @@
 })(typeof window !== "undefined" ? window : null, function createStreamRankApi() {
   "use strict";
 
-  const VERSION = "0.4.3";
+  const VERSION = "0.5.0";
   const GLOBAL_KEY = "__spotifyGemSort";
   const STYLE_ID = "spotify-gem-sort-style";
   const GRID_SELECTOR =
@@ -54,6 +54,8 @@
   const ARTIST_CACHE_LIMIT = 5_000;
   const LOGGED_MESSAGE_LIMIT = 200;
   const RELINK_DURATION_TOLERANCE_MS = 2_000;
+  const CACHE_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+  const CACHE_PRUNE_IDLE_TIMEOUT_MS = 30 * 1000;
 
   function normalizeByteArray(value) {
     if (!value) return [];
@@ -518,6 +520,27 @@
     return null;
   }
 
+  function buildMetricRecords(items) {
+    return (Array.isArray(items) ? items : []).map(
+      (item, sourceIndex) => ({
+        info: normalizeTrackItem(item),
+        item,
+        plays: null,
+        rank: null,
+        sourceIndex,
+        value: null,
+      }),
+    );
+  }
+
+  function selectMetricRecordValues(records, key) {
+    if (!["plays", "rank"].includes(key)) return records;
+    (Array.isArray(records) ? records : []).forEach((record) => {
+      record.value = record[key] ?? null;
+    });
+    return records;
+  }
+
   function sortMetricRecords(records, direction) {
     const multiplier = direction === "desc" ? -1 : 1;
     return records.slice().sort((left, right) => {
@@ -728,6 +751,58 @@
     }
   }
 
+  function countExpiredCacheEntries(cache, now = Date.now()) {
+    if (!(cache instanceof Map)) return 0;
+    const currentTime = Number.isFinite(Number(now))
+      ? Number(now)
+      : Date.now();
+    let expired = 0;
+
+    cache.forEach((entry) => {
+      const expiresAt = Number(entry?.expiresAt);
+      if (!Number.isFinite(expiresAt) || expiresAt <= currentTime) {
+        expired += 1;
+      }
+    });
+    return expired;
+  }
+
+  function pruneTimedCache(
+    cache,
+    now = Date.now(),
+    maximum = Number.POSITIVE_INFINITY,
+  ) {
+    if (!(cache instanceof Map)) {
+      return { evicted: 0, expired: 0, remaining: 0 };
+    }
+
+    const currentTime = Number.isFinite(Number(now))
+      ? Number(now)
+      : Date.now();
+    const numericMaximum = Number(maximum);
+    const limit = Number.isFinite(numericMaximum)
+      ? Math.max(0, Math.floor(numericMaximum))
+      : Number.POSITIVE_INFINITY;
+    let expired = 0;
+    let evicted = 0;
+
+    cache.forEach((entry, key) => {
+      const expiresAt = Number(entry?.expiresAt);
+      if (!Number.isFinite(expiresAt) || expiresAt <= currentTime) {
+        cache.delete(key);
+        expired += 1;
+      }
+    });
+
+    while (cache.size > limit) {
+      const oldestKey = cache.keys().next().value;
+      if (!cache.delete(oldestKey)) break;
+      evicted += 1;
+    }
+
+    return { evicted, expired, remaining: cache.size };
+  }
+
   function createLimiter(maximum) {
     const queue = [];
     let active = 0;
@@ -787,11 +862,32 @@
     const pendingPlayCounts = new Map();
     const observedGrids = new Set();
     const loggedMessages = new Set();
-    const cacheLimits = new Map([
-      [playCountCache, PLAY_COUNT_CACHE_LIMIT],
-      [albumCache, ALBUM_CACHE_LIMIT],
-      [artistCache, ARTIST_CACHE_LIMIT],
-    ]);
+    const cachePolicies = [
+      {
+        cache: playCountCache,
+        evicted: 0,
+        expiredPruned: 0,
+        limit: PLAY_COUNT_CACHE_LIMIT,
+        name: "playCounts",
+      },
+      {
+        cache: albumCache,
+        evicted: 0,
+        expiredPruned: 0,
+        limit: ALBUM_CACHE_LIMIT,
+        name: "albums",
+      },
+      {
+        cache: artistCache,
+        evicted: 0,
+        expiredPruned: 0,
+        limit: ARTIST_CACHE_LIMIT,
+        name: "artists",
+      },
+    ];
+    const cachePolicyByCache = new Map(
+      cachePolicies.map((policy) => [policy.cache, policy]),
+    );
     const albumLimit = createLimiter(3);
     const artistLimit = createLimiter(4);
     const trackLimit = createLimiter(3);
@@ -803,6 +899,11 @@
     let historyUnlisten = null;
     let reconcileTimer = null;
     let playCountBatchTimer = null;
+    let cachePruneTimer = null;
+    let cachePruneIdleHandle = null;
+    let cachePruneIdleKind = null;
+    let cachePruneRuns = 0;
+    let lastCachePruneAt = null;
     let metadataServiceClient = null;
     let metadataServiceAttempted = false;
     let sortSession = null;
@@ -842,6 +943,90 @@
       console.warn("[Gem Sort]", ...message);
     }
 
+    function getTotalCacheEntries() {
+      return cachePolicies.reduce(
+        (total, policy) => total + policy.cache.size,
+        0,
+      );
+    }
+
+    function cancelScheduledCachePrune() {
+      if (cachePruneTimer !== null) {
+        browserRoot.clearTimeout(cachePruneTimer);
+        cachePruneTimer = null;
+      }
+      if (cachePruneIdleHandle === null) return;
+
+      if (
+        cachePruneIdleKind === "idle" &&
+        typeof browserRoot.cancelIdleCallback === "function"
+      ) {
+        browserRoot.cancelIdleCallback(cachePruneIdleHandle);
+      } else {
+        browserRoot.clearTimeout(cachePruneIdleHandle);
+      }
+      cachePruneIdleHandle = null;
+      cachePruneIdleKind = null;
+    }
+
+    function pruneCaches() {
+      cancelScheduledCachePrune();
+      const now = Date.now();
+      const caches = {};
+
+      cachePolicies.forEach((policy) => {
+        const result = pruneTimedCache(
+          policy.cache,
+          now,
+          policy.limit,
+        );
+        policy.expiredPruned += result.expired;
+        policy.evicted += result.evicted;
+        caches[policy.name] = result;
+      });
+      cachePruneRuns += 1;
+      lastCachePruneAt = now;
+
+      if (!destroyed && getTotalCacheEntries() > 0) {
+        scheduleCachePrune();
+      }
+      return {
+        caches,
+        prunedAt: now,
+        remaining: getTotalCacheEntries(),
+      };
+    }
+
+    function scheduleCachePrune() {
+      if (
+        destroyed ||
+        cachePruneTimer !== null ||
+        cachePruneIdleHandle !== null ||
+        getTotalCacheEntries() === 0
+      ) {
+        return;
+      }
+
+      cachePruneTimer = browserRoot.setTimeout(() => {
+        cachePruneTimer = null;
+        const run = () => {
+          cachePruneIdleHandle = null;
+          cachePruneIdleKind = null;
+          if (!destroyed) pruneCaches();
+        };
+
+        if (typeof browserRoot.requestIdleCallback === "function") {
+          cachePruneIdleKind = "idle";
+          cachePruneIdleHandle = browserRoot.requestIdleCallback(run, {
+            timeout: CACHE_PRUNE_IDLE_TIMEOUT_MS,
+          });
+        } else {
+          cachePruneIdleKind = "timeout";
+          cachePruneIdleHandle = browserRoot.setTimeout(run, 0);
+        }
+      }, CACHE_PRUNE_INTERVAL_MS);
+    }
+
     function cacheRead(cache, key) {
       const entry = cache.get(key);
       if (!entry) return { hit: false, value: undefined };
@@ -855,6 +1040,7 @@
     }
 
     function cacheWrite(cache, key, value, ttl) {
+      if (destroyed) return value;
       const existing = cache.get(key);
       if (
         cache === playCountCache &&
@@ -867,10 +1053,13 @@
       }
       cache.delete(key);
       cache.set(key, { value, expiresAt: Date.now() + ttl });
-      const limit = cacheLimits.get(cache);
-      while (limit && cache.size > limit) {
-        cache.delete(cache.keys().next().value);
+      const policy = cachePolicyByCache.get(cache);
+      while (policy && cache.size > policy.limit) {
+        const oldestKey = cache.keys().next().value;
+        if (!cache.delete(oldestKey)) break;
+        policy.evicted += 1;
       }
+      scheduleCachePrune();
       return value;
     }
 
@@ -2435,16 +2624,11 @@
     }
 
     async function loadMetricRecords(session, key, operationId) {
-      if (session.metricRecords.has(key)) {
-        return session.metricRecords.get(key);
+      if (session.loadedMetrics.has(key)) {
+        return selectMetricRecordValues(session.records, key);
       }
 
-      const records = session.sourceItems.map((item, sourceIndex) => ({
-        info: normalizeTrackItem(item),
-        item,
-        sourceIndex,
-        value: null,
-      }));
+      const records = session.records;
 
       if (key === "plays") {
         const counts = await resolveBulkPlayCounts(
@@ -2456,7 +2640,7 @@
         if (!counts) return null;
         records.forEach((record) => {
           if (record.info) {
-            record.value = counts.get(record.info.trackUri) ?? null;
+            record.plays = counts.get(record.info.trackUri) ?? null;
           }
         });
       } else {
@@ -2497,7 +2681,7 @@
                   group.name,
                 );
                 group.records.forEach((record) => {
-                  record.value =
+                  record.rank =
                     findTopTrackRecord(artist, record.info)?.rank ?? null;
                 });
               }
@@ -2512,8 +2696,19 @@
       ) {
         return null;
       }
-      session.metricRecords.set(key, records);
-      return records;
+      session.loadedMetrics.add(key);
+      return selectMetricRecordValues(records, key);
+    }
+
+    function releaseSortSessionMemory(session) {
+      if (!session) return;
+      session.loadedMetrics?.clear?.();
+      if (Array.isArray(session.records)) session.records.length = 0;
+      if (Array.isArray(session.sortedItems)) {
+        session.sortedItems.length = 0;
+      }
+      session.playbackContext = null;
+      session.responseBase = null;
     }
 
     function clearMetricSort({
@@ -2557,6 +2752,7 @@
         if (invalidate && session.grid.isConnected) {
           invalidateSortedGrid(session.grid, scrollToTop);
         }
+        releaseSortSessionMemory(session);
       }
       if (loadingGrid && loadingGrid !== session?.grid) {
         updateSortHeader(loadingGrid);
@@ -2619,19 +2815,19 @@
           session = {
             context,
             grid,
+            loadedMetrics: new Set(),
             methodHandle: null,
-            metricRecords: new Map(),
             path: context.path,
             playbackContext: null,
             playbackContextGeneration: null,
             playerPlayHandle: null,
             queryFingerprint: complete.queryFingerprint,
+            records: buildMetricRecords(complete.items),
             responseBase: complete.responseBase,
             sortState: null,
             sortGeneration: operationId,
             sortedPlaybackStarts: 0,
             sortedItems: complete.items,
-            sourceItems: complete.items,
             uri: context.uri,
             updateUnlisten: sortLoading?.updateUnlisten || null,
           };
@@ -3099,6 +3295,9 @@
       destroyed = true;
       clearTimeout(reconcileTimer);
       clearTimeout(playCountBatchTimer);
+      reconcileTimer = null;
+      playCountBatchTimer = null;
+      cancelScheduledCachePrune();
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
       observedGrids.clear();
@@ -3121,6 +3320,14 @@
         invalidate: false,
         scrollToTop: false,
       });
+      pendingPlayCounts.forEach((entry) => entry.resolve(null));
+      pendingPlayCounts.clear();
+      playCountInFlight.clear();
+      albumInFlight.clear();
+      artistInFlight.clear();
+      cachePolicies.forEach((policy) => policy.cache.clear());
+      loggedMessages.clear();
+      metadataServiceClient = null;
       document.querySelectorAll('[data-gem-sort-grid="true"]').forEach(restoreGrid);
       document.getElementById(STYLE_ID)?.remove();
       if (browserRoot[GLOBAL_KEY] === runtime) {
@@ -3129,6 +3336,18 @@
     }
 
     function getStatus() {
+      const now = Date.now();
+      const caches = {};
+      cachePolicies.forEach((policy) => {
+        caches[policy.name] = {
+          entries: policy.cache.size,
+          evicted: policy.evicted,
+          expired: countExpiredCacheEntries(policy.cache, now),
+          expiredPruned: policy.expiredPruned,
+          limit: policy.limit,
+        };
+      });
+
       return {
         version: VERSION,
         initialized,
@@ -3148,6 +3367,16 @@
           artists: ARTIST_CACHE_LIMIT,
           warnings: LOGGED_MESSAGE_LIMIT,
         },
+        caches,
+        cacheMaintenance: {
+          idleTimeoutMs: CACHE_PRUNE_IDLE_TIMEOUT_MS,
+          intervalMs: CACHE_PRUNE_INTERVAL_MS,
+          lastPrunedAt: lastCachePruneAt,
+          runs: cachePruneRuns,
+          scheduled:
+            cachePruneTimer !== null ||
+            cachePruneIdleHandle !== null,
+        },
         bulkPlaySorts,
         sortedPlaybackStarts,
         activeSort: sortSession
@@ -3155,6 +3384,7 @@
               metric: sortSession.sortState?.key || null,
               direction: sortSession.sortState?.direction || null,
               itemCount: sortSession.sortedItems.length,
+              loadedMetrics: Array.from(sortSession.loadedMetrics),
               playbackHookInstalled: Boolean(
                 sortSession.playerPlayHandle,
               ),
@@ -3171,6 +3401,7 @@
       destroy,
       reconcile: reconcileAll,
       getStatus,
+      pruneCaches,
     };
 
     return runtime;
@@ -3179,6 +3410,7 @@
   return {
     VERSION,
     buildFallbackTemplate,
+    buildMetricRecords,
     buildMissingRanges,
     buildSortedPlaybackContext,
     buildTopTrackIndex,
@@ -3202,9 +3434,11 @@
     normalizeTrackName,
     parseVarint,
     preferPlayCount,
+    pruneTimedCache,
     removeNamedTemplateTrack,
     remapSortedPlaybackOptions,
     sortMetricRecords,
+    selectMetricRecordValues,
     spotifyUriFromHref,
     start,
     stripTemplateColumn,
