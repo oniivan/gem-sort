@@ -65,6 +65,23 @@ test("runtime dataset keys match the Gem Sort CSS attribute namespace", () => {
   ].forEach((attribute) => assert.match(source, new RegExp(attribute)));
 });
 
+test("the circular-card compatibility style cannot affect square artwork", () => {
+  const source = fs.readFileSync(require.resolve("../gem-sort.js"), "utf8");
+
+  assert.match(
+    source,
+    /\.main-cardImage-imageWrapper\.main-cardImage-circular\s*\{/,
+  );
+  assert.match(
+    source,
+    /\.main-cardImage-imageWrapper\.main-cardImage-circular\s*\{[^}]*background-color:\s*transparent\s*!important;/s,
+  );
+  assert.doesNotMatch(
+    source,
+    /(?<!\.)main-cardImage-imageWrapper\s*\{|\.main-cardImage-imageWrapper\s*\{/,
+  );
+});
+
 function encodeTaggedVarint(value) {
   let remaining = BigInt(value);
   const bytes = [8];

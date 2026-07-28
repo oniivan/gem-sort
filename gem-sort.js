@@ -24,7 +24,7 @@
 })(typeof window !== "undefined" ? window : null, function createStreamRankApi() {
   "use strict";
 
-  const VERSION = "0.5.3";
+  const VERSION = "0.5.4";
   const GLOBAL_KEY = "__spotifyGemSort";
   const STYLE_ID = "spotify-gem-sort-style";
   const GRID_SELECTOR =
@@ -1187,6 +1187,17 @@
       }
 
       style.textContent = `
+        /*
+         * Spotify 1.2.94 can leave the generic square card background visible
+         * behind circular artist and profile artwork. Scope the correction to
+         * wrappers Spotify explicitly marks as circular so album and playlist
+         * cards retain their native shape and shadow.
+         */
+        .main-cardImage-imageWrapper.main-cardImage-circular {
+          background-color: transparent !important;
+          border-radius: 50%;
+        }
+
         [data-gem-sort-grid="true"] .spotify-gem-sort-header,
         [data-gem-sort-grid="true"] .spotify-gem-sort-cell {
           box-sizing: border-box;

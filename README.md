@@ -35,6 +35,8 @@ alone, and keeps the rest of Spotify's layout familiar.
   blocking reordering drops inside the temporarily sorted source playlist.
 - Retains Date added when the playlist has meaningful dates, but hides the
   empty field on radio, mixes, and other generated playlist views.
+- Restores transparent, circular wrappers for artist and profile cards when
+  Spotify's generic square artwork background leaks through their corners.
 - Batches visible play-count lookups, deduplicates artist lookups, and reuses
   in-memory results within defined windows. No API key, Spotify developer app,
   or third-party service is required.
