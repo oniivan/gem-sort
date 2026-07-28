@@ -24,7 +24,7 @@
 })(typeof window !== "undefined" ? window : null, function createStreamRankApi() {
   "use strict";
 
-  const VERSION = "0.5.0";
+  const VERSION = "0.5.1";
   const GLOBAL_KEY = "__spotifyGemSort";
   const STYLE_ID = "spotify-gem-sort-style";
   const GRID_SELECTOR =
@@ -48,7 +48,7 @@
   const SORT_PLAY_COUNT_BATCH_SIZE = 3000;
   const COMPLETE_LIST_PAGE_SIZE = 500;
   const COMPLETE_LIST_CONCURRENCY = 3;
-  const ARTIST_SORT_CONCURRENCY = 4;
+  const ARTIST_REQUEST_CONCURRENCY_LIMIT = 20;
   const PLAY_COUNT_CACHE_LIMIT = 20_000;
   const ALBUM_CACHE_LIMIT = 5_000;
   const ARTIST_CACHE_LIMIT = 5_000;
@@ -541,6 +541,14 @@
     return records;
   }
 
+  function getArtistSortConcurrency(artistCount) {
+    const count = Math.max(0, Math.floor(Number(artistCount) || 0));
+    if (count === 0) return 0;
+    if (count <= 50) return Math.min(count, 10);
+    if (count <= 250) return 16;
+    return ARTIST_REQUEST_CONCURRENCY_LIMIT;
+  }
+
   function sortMetricRecords(records, direction) {
     const multiplier = direction === "desc" ? -1 : 1;
     return records.slice().sort((left, right) => {
@@ -889,8 +897,19 @@
       cachePolicies.map((policy) => [policy.cache, policy]),
     );
     const albumLimit = createLimiter(3);
-    const artistLimit = createLimiter(4);
+    const artistLimit = createLimiter(
+      ARTIST_REQUEST_CONCURRENCY_LIMIT,
+    );
     const trackLimit = createLimiter(3);
+    const artistRequestMetrics = {
+      active: 0,
+      cacheHits: 0,
+      completed: 0,
+      deduplicated: 0,
+      failed: 0,
+      peak: 0,
+      totalDurationMs: 0,
+    };
 
     let destroyed = false;
     let initialized = false;
@@ -1936,51 +1955,81 @@
       }
 
       const cached = cacheRead(artistCache, artistUri);
-      if (cached.hit) return Promise.resolve(cached.value);
-      if (artistInFlight.has(artistUri)) return artistInFlight.get(artistUri);
+      if (cached.hit) {
+        artistRequestMetrics.cacheHits += 1;
+        return Promise.resolve(cached.value);
+      }
+      if (artistInFlight.has(artistUri)) {
+        artistRequestMetrics.deduplicated += 1;
+        return artistInFlight.get(artistUri);
+      }
 
       const request = artistLimit(async () => {
-        const Spicetify = getSpicetify();
-        const definition = Spicetify?.GraphQL?.Definitions?.queryArtistOverview;
-        if (!definition || !Spicetify?.GraphQL?.Request) {
-          throw new Error("Artist overview GraphQL definition is unavailable");
-        }
-
-        const response = await withTimeout(
-          Spicetify.GraphQL.Request(definition, {
-            uri: artistUri,
-            locale: getLocale(),
-            includePrerelease: false,
-          }),
-          REQUEST_TIMEOUT_MS,
-          "Artist Top 10 request",
+        const startedAt = Date.now();
+        artistRequestMetrics.active += 1;
+        artistRequestMetrics.peak = Math.max(
+          artistRequestMetrics.peak,
+          artistRequestMetrics.active,
         );
 
-        if (response?.errors?.length) {
-          throw new Error(response.errors[0]?.message || "Artist GraphQL request failed");
-        }
-
-        const { byUri, records } = buildTopTrackIndex(response);
-        byUri.forEach((record, trackUri) => {
-          if (record.playcount !== null) {
-            cacheWrite(
-              playCountCache,
-              trackUri,
-              record.playcount,
-              PLAY_COUNT_TTL_MS,
+        try {
+          const Spicetify = getSpicetify();
+          const definition =
+            Spicetify?.GraphQL?.Definitions?.queryArtistOverview;
+          if (!definition || !Spicetify?.GraphQL?.Request) {
+            throw new Error(
+              "Artist overview GraphQL definition is unavailable",
             );
           }
-        });
 
-        const value = {
-          artistName:
-            response?.data?.artistUnion?.profile?.name || fallbackName || "",
-          byUri,
-          records,
-          unavailable: false,
-        };
-        cacheWrite(artistCache, artistUri, value, ARTIST_TTL_MS);
-        return value;
+          const response = await withTimeout(
+            Spicetify.GraphQL.Request(definition, {
+              uri: artistUri,
+              locale: getLocale(),
+              includePrerelease: false,
+            }),
+            REQUEST_TIMEOUT_MS,
+            "Artist Top 10 request",
+          );
+
+          if (response?.errors?.length) {
+            throw new Error(
+              response.errors[0]?.message ||
+                "Artist GraphQL request failed",
+            );
+          }
+
+          const { byUri, records } = buildTopTrackIndex(response);
+          byUri.forEach((record, trackUri) => {
+            if (record.playcount !== null) {
+              cacheWrite(
+                playCountCache,
+                trackUri,
+                record.playcount,
+                PLAY_COUNT_TTL_MS,
+              );
+            }
+          });
+
+          const value = {
+            artistName:
+              response?.data?.artistUnion?.profile?.name ||
+              fallbackName ||
+              "",
+            byUri,
+            records,
+            unavailable: false,
+          };
+          cacheWrite(artistCache, artistUri, value, ARTIST_TTL_MS);
+          artistRequestMetrics.completed += 1;
+          return value;
+        } catch (error) {
+          artistRequestMetrics.failed += 1;
+          throw error;
+        } finally {
+          artistRequestMetrics.active -= 1;
+          artistRequestMetrics.totalDurationMs += Date.now() - startedAt;
+        }
       })
         .catch((error) => {
           logOnce(`artist:${artistUri}`, `Top 10 lookup failed for ${artistUri}.`, error);
@@ -2657,12 +2706,24 @@
         });
 
         const entries = Array.from(artists);
+        const concurrency = getArtistSortConcurrency(entries.length);
+        const progress = {
+          completed: 0,
+          concurrency,
+          durationMs: null,
+          startedAt: Date.now(),
+          total: entries.length,
+        };
+        session.artistProgress = progress;
+        if (sortLoading?.operationId === operationId) {
+          sortLoading.artistProgress = progress;
+        }
         let nextArtistIndex = 0;
         await Promise.all(
           Array.from(
             {
               length: Math.min(
-                ARTIST_SORT_CONCURRENCY,
+                concurrency,
                 entries.length,
               ),
             },
@@ -2684,10 +2745,12 @@
                   record.rank =
                     findTopTrackRecord(artist, record.info)?.rank ?? null;
                 });
+                progress.completed += 1;
               }
             },
           ),
         );
+        progress.durationMs = Date.now() - progress.startedAt;
       }
 
       if (
@@ -2709,6 +2772,7 @@
       }
       session.playbackContext = null;
       session.responseBase = null;
+      session.artistProgress = null;
     }
 
     function clearMetricSort({
@@ -2815,6 +2879,7 @@
           session = {
             context,
             grid,
+            artistProgress: null,
             loadedMetrics: new Set(),
             methodHandle: null,
             path: context.path,
@@ -3368,6 +3433,18 @@
           warnings: LOGGED_MESSAGE_LIMIT,
         },
         caches,
+        artistRequests: {
+          ...artistRequestMetrics,
+          averageDurationMs:
+            artistRequestMetrics.completed + artistRequestMetrics.failed > 0
+              ? Math.round(
+                  artistRequestMetrics.totalDurationMs /
+                    (artistRequestMetrics.completed +
+                      artistRequestMetrics.failed),
+                )
+              : 0,
+          concurrencyLimit: ARTIST_REQUEST_CONCURRENCY_LIMIT,
+        },
         cacheMaintenance: {
           idleTimeoutMs: CACHE_PRUNE_IDLE_TIMEOUT_MS,
           intervalMs: CACHE_PRUNE_INTERVAL_MS,
@@ -3385,10 +3462,22 @@
               direction: sortSession.sortState?.direction || null,
               itemCount: sortSession.sortedItems.length,
               loadedMetrics: Array.from(sortSession.loadedMetrics),
+              artistProgress: sortSession.artistProgress
+                ? { ...sortSession.artistProgress }
+                : null,
               playbackHookInstalled: Boolean(
                 sortSession.playerPlayHandle,
               ),
               playbackStarts: sortSession.sortedPlaybackStarts,
+            }
+          : null,
+        loadingSort: sortLoading
+          ? {
+              artistProgress: sortLoading.artistProgress
+                ? { ...sortLoading.artistProgress }
+                : null,
+              metric: sortLoading.key || null,
+              operationId: sortLoading.operationId,
             }
           : null,
         warnings: Array.from(loggedMessages),
@@ -3424,6 +3513,7 @@
     findMethodOwner,
     findTrackItem,
     formatPlayCount,
+    getArtistSortConcurrency,
     getPlaybackContextUri,
     getCapturedPageOffset,
     buildPlaylistTemplate,

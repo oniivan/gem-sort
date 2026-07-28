@@ -1,6 +1,6 @@
 {
   "name": "spicetify-gem-sort",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Spotify-reported play counts and primary-artist Top 10 ranks in Spicetify playlist rows.",
   "scripts": {

@@ -19,6 +19,7 @@ const {
   findTopTrackRecord,
   fingerprintQueryOptions,
   formatPlayCount,
+  getArtistSortConcurrency,
   getCapturedPageOffset,
   getPlaybackContextUri,
   insertTemplateColumn,
@@ -244,6 +245,16 @@ test("large sorts reuse one canonical record graph across both metrics", () => {
   assert.equal(records[11].value, null);
   assert.strictEqual(records[0].info, firstInfo);
   assert.doesNotMatch(source, /\b(?:metricRecords|sourceItems)\b/);
+});
+
+test("Top 10 bulk work scales within one shared request ceiling", () => {
+  assert.equal(getArtistSortConcurrency(0), 0);
+  assert.equal(getArtistSortConcurrency(4), 4);
+  assert.equal(getArtistSortConcurrency(50), 10);
+  assert.equal(getArtistSortConcurrency(51), 16);
+  assert.equal(getArtistSortConcurrency(250), 16);
+  assert.equal(getArtistSortConcurrency(251), 20);
+  assert.equal(getArtistSortConcurrency(3_000), 20);
 });
 
 test("timed cache pruning removes expiry before enforcing the LRU cap", () => {

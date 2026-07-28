@@ -62,8 +62,10 @@ does not edit or rewrite the playlist.
 To build that result, Gem Sort reuses the page Spotify has already loaded
 and requests missing pages with limited concurrency. A Plays sort asks
 Spotify's MetadataService for uncached counts in bulk before using album and
-track GraphQL fallbacks. A Top 10 sort deduplicates primary artists and limits
-the number of artist requests running at once.
+track GraphQL fallbacks. A Top 10 sort deduplicates primary artists and uses a
+bounded adaptive worker pool: up to 10 requests for small sets, 16 for medium
+sets, and 20 for large sets. Row lookups and bulk sorting share the same
+20-request ceiling.
 
 While the sort is active:
 
@@ -122,9 +124,10 @@ preventing expired entries from lingering through an unusually long Spotify
 session.
 
 `window.__spotifyGemSort.getStatus()` reports live sizes, expired entries,
-limits, cumulative expiry/LRU removals, maintenance timing, and which metrics
-the active sort has loaded. `window.__spotifyGemSort.pruneCaches()` runs the
-same maintenance immediately and returns its removal summary.
+limits, cumulative expiry/LRU removals, maintenance timing, artist-request
+throughput and failures, active Top 10 progress, and which metrics the active
+sort has loaded. `window.__spotifyGemSort.pruneCaches()` runs the same
+maintenance immediately and returns its removal summary.
 
 ## Installation
 
