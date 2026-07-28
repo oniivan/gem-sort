@@ -24,7 +24,7 @@
 })(typeof window !== "undefined" ? window : null, function createStreamRankApi() {
   "use strict";
 
-  const VERSION = "0.5.2";
+  const VERSION = "0.5.4";
   const GLOBAL_KEY = "__spotifyGemSort";
   const STYLE_ID = "spotify-gem-sort-style";
   const GRID_SELECTOR =
@@ -468,6 +468,10 @@
       null;
 
     return {
+      uid:
+        typeof item.uid === "string" && item.uid
+          ? item.uid
+          : null,
       trackUri: item.uri,
       trackName: typeof item.name === "string" ? item.name : "",
       durationMs: toDurationMs(
@@ -650,6 +654,69 @@
       : null;
   }
 
+  function getPlayerContextUri(playerData) {
+    return (
+      getPlaybackContextUri(playerData?.context_uri) ||
+      getPlaybackContextUri(playerData?.context)
+    );
+  }
+
+  function getPlaybackContextToken(originalUri) {
+    return typeof originalUri === "string"
+      ? originalUri.split(":").at(-1)?.replace(/[^A-Za-z0-9]/g, "") || ""
+      : "";
+  }
+
+  function isGemSortPlaybackContext(contextUri, originalUri) {
+    const originalToken = getPlaybackContextToken(originalUri);
+    return (
+      Boolean(originalToken) &&
+      typeof contextUri === "string" &&
+      contextUri.startsWith(
+        `spotify:internal:gem-sort:${originalToken}:`,
+      )
+    );
+  }
+
+  function normalizePlaybackIdentity(item) {
+    const uri =
+      typeof item?.uri === "string"
+        ? item.uri
+        : typeof item?.trackUri === "string"
+          ? item.trackUri
+          : "";
+    if (!uri) return null;
+
+    return {
+      uri,
+      uid:
+        typeof item.uid === "string" && item.uid
+          ? item.uid
+          : null,
+    };
+  }
+
+  function findCurrentTrackIndex(items, currentItem) {
+    const current = normalizePlaybackIdentity(currentItem);
+    if (!current) return -1;
+
+    const identities = (Array.isArray(items) ? items : []).map(
+      normalizePlaybackIdentity,
+    );
+    if (current.uid) {
+      const uidMatch = identities.findIndex(
+        (item) => item?.uid === current.uid,
+      );
+      if (uidMatch >= 0) return uidMatch;
+
+      // If Spotify exposed occurrence IDs for these rows, a URI fallback
+      // could highlight the wrong copy of a duplicated playlist track.
+      if (identities.some((item) => item?.uid)) return -1;
+    }
+
+    return identities.findIndex((item) => item?.uri === current.uri);
+  }
+
   function findMethodOwner(value, methodName) {
     let current = value;
     while (current && typeof current === "object") {
@@ -665,10 +732,7 @@
   }
 
   function buildSortedPlaybackContext(items, originalUri, generation = 0) {
-    const originalToken =
-      typeof originalUri === "string"
-        ? originalUri.split(":").at(-1)?.replace(/[^A-Za-z0-9]/g, "")
-        : "";
+    const originalToken = getPlaybackContextToken(originalUri);
     const generationToken =
       String(generation).replace(/[^A-Za-z0-9_-]/g, "") || "0";
     const contextItems = (Array.isArray(items) ? items : []).flatMap(
@@ -947,6 +1011,7 @@
     let mutationObserver = null;
     let resizeObserver = null;
     let historyUnlisten = null;
+    let playerSongChangeListener = null;
     let reconcileTimer = null;
     let playCountBatchTimer = null;
     let cachePruneTimer = null;
@@ -1122,6 +1187,17 @@
       }
 
       style.textContent = `
+        /*
+         * Spotify 1.2.94 can leave the generic square card background visible
+         * behind circular artist and profile artwork. Scope the correction to
+         * wrappers Spotify explicitly marks as circular so album and playlist
+         * cards retain their native shape and shadow.
+         */
+        .main-cardImage-imageWrapper.main-cardImage-circular {
+          background-color: transparent !important;
+          border-radius: 50%;
+        }
+
         [data-gem-sort-grid="true"] .spotify-gem-sort-header,
         [data-gem-sort-grid="true"] .spotify-gem-sort-cell {
           box-sizing: border-box;
@@ -1210,6 +1286,15 @@
         [data-gem-sort-grid="true"] .spotify-gem-sort-skeleton {
           min-width: 0;
           opacity: 0.35;
+        }
+
+        [data-gem-sort-sort-active="true"]
+          [data-gem-sort-current-track="true"]
+          .main-trackList-rowMainContentTitle {
+          color: var(
+            --text-bright-accent,
+            var(--spice-button, #1ed760)
+          ) !important;
         }
       `;
     }
@@ -1496,6 +1581,7 @@
       if (!trackUri) return null;
 
       return {
+        uid: null,
         trackUri,
         trackName: trackLink?.textContent?.trim() || "",
         durationMs: null,
@@ -1511,6 +1597,44 @@
           row.querySelector('a[href*="/artist/"]')?.textContent?.trim() || "",
         isLocal: false,
       };
+    }
+
+    function clearCurrentTrackMarkers(grid) {
+      grid
+        ?.querySelectorAll?.("[data-gem-sort-current-track]")
+        .forEach((row) => {
+          delete row.dataset.gemSortCurrentTrack;
+        });
+    }
+
+    function syncCurrentTrackMarker(grid, rows, rowInfos) {
+      clearCurrentTrackMarkers(grid);
+
+      const session = sortSession;
+      if (
+        session?.grid !== grid ||
+        getCurrentPath() !== session.path
+      ) {
+        return;
+      }
+
+      const playerData = getSpicetify()?.Player?.data;
+      if (
+        !isGemSortPlaybackContext(
+          getPlayerContextUri(playerData),
+          session.uri,
+        )
+      ) {
+        return;
+      }
+
+      const currentIndex = findCurrentTrackIndex(
+        rowInfos,
+        playerData?.item,
+      );
+      if (currentIndex >= 0) {
+        rows[currentIndex].dataset.gemSortCurrentTrack = "true";
+      }
     }
 
     function resetCell(cell, info) {
@@ -2851,6 +2975,7 @@
         session.playerPlayHandle = null;
         session.methodHandle?.restore();
         delete session.grid.dataset.gemSortSortActive;
+        clearCurrentTrackMarkers(session.grid);
         updateSortHeader(session.grid);
         if (invalidate && session.grid.isConnected) {
           invalidateSortedGrid(session.grid, scrollToTop);
@@ -3154,7 +3279,9 @@
       }
 
       renumberCells(row, "gridcell");
-      populateCell(cell, extractRowInfo(row));
+      const info = extractRowInfo(row);
+      populateCell(cell, info);
+      return info;
     }
 
     function reconcileGrid(grid) {
@@ -3218,11 +3345,15 @@
             hiddenColumnIndexes,
           ),
         );
-      grid
-        .querySelectorAll(ROW_SELECTOR)
-        .forEach((row) =>
-          ensureRow(row, replacementColumnIndex, hiddenColumnIndexes),
-        );
+      const rows = Array.from(grid.querySelectorAll(ROW_SELECTOR));
+      const rowInfos = rows.map((row) =>
+        ensureRow(
+          row,
+          replacementColumnIndex,
+          hiddenColumnIndexes,
+        ),
+      );
+      syncCurrentTrackMarker(grid, rows, rowInfos);
 
       if (resizeObserver && !observedGrids.has(grid)) {
         observedGrids.add(grid);
@@ -3287,6 +3418,15 @@
       document.addEventListener("scroll", scheduleReconcile, true);
       document.addEventListener("input", handlePlaylistFilterInput, true);
       browserRoot.addEventListener("resize", scheduleReconcile);
+
+      const player = getSpicetify()?.Player;
+      if (typeof player?.addEventListener === "function") {
+        playerSongChangeListener = () => scheduleReconcile(0);
+        player.addEventListener(
+          "songchange",
+          playerSongChangeListener,
+        );
+      }
 
       try {
         historyUnlisten =
@@ -3370,6 +3510,7 @@
       delete grid.__streamRankDataHasMeaningfulDates;
       delete grid.dataset.gemSortGrid;
       delete grid.dataset.gemSortSortActive;
+      clearCurrentTrackMarkers(grid);
 
       if (grid.__streamRankDropGuard) {
         grid.removeEventListener(
@@ -3420,6 +3561,14 @@
       );
       browserRoot.removeEventListener("resize", scheduleReconcile);
 
+      if (playerSongChangeListener) {
+        getSpicetify()?.Player?.removeEventListener?.(
+          "songchange",
+          playerSongChangeListener,
+        );
+        playerSongChangeListener = null;
+      }
+
       try {
         if (typeof historyUnlisten === "function") historyUnlisten();
       } catch {
@@ -3467,6 +3616,9 @@
         ).length,
         renderedCells: document.querySelectorAll(
           ".spotify-gem-sort-cell",
+        ).length,
+        highlightedRows: document.querySelectorAll(
+          "[data-gem-sort-current-track=\"true\"]",
         ).length,
         playCountCacheEntries: playCountCache.size,
         artistCacheEntries: artistCache.size,
@@ -3553,6 +3705,7 @@
     extractTrackCounts,
     extractTrackInfoFromProps,
     findTopTrackRecord,
+    findCurrentTrackIndex,
     fingerprintQueryOptions,
     findColumnTypeIndex,
     findMethodOwner,
@@ -3560,9 +3713,11 @@
     formatPlayCount,
     getArtistSortConcurrency,
     getPlaybackContextUri,
+    getPlayerContextUri,
     getCapturedPageOffset,
     buildPlaylistTemplate,
     insertTemplateColumn,
+    isGemSortPlaybackContext,
     isPlaylistPath,
     nextMetricSortState,
     normalizeTrackItem,
