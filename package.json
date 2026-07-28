@@ -1,0 +1,11 @@
+{
+  "name": "spicetify-gem-sort",
+  "version": "0.4.1",
+  "private": true,
+  "description": "Spotify-reported play counts and primary-artist Top 10 ranks in Spicetify playlist rows.",
+  "scripts": {
+    "check": "node --check gem-sort.js && sh -n install.sh",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
