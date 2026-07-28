@@ -24,7 +24,7 @@
 })(typeof window !== "undefined" ? window : null, function createStreamRankApi() {
   "use strict";
 
-  const VERSION = "0.4.2";
+  const VERSION = "0.4.3";
   const GLOBAL_KEY = "__spotifyGemSort";
   const STYLE_ID = "spotify-gem-sort-style";
   const GRID_SELECTOR =
@@ -36,7 +36,7 @@
     ".main-trackList-trackListRowGrid:not(.main-trackList-trackListRow)" +
     ":not(.main-trackList-trackListHeaderRow), " +
     '[data-testid="tracklist-row-placeholder"]';
-  const COLUMN_MARKER = "[streamRank] minmax(220px, 1.65fr)";
+  const COLUMN_MARKER = "[streamRank] 220px";
   const LOADING = Symbol("gem-sort-loading");
   const PLAY_COUNT_TTL_MS = 60 * 60 * 1000;
   const ALBUM_TTL_MS = 6 * 60 * 60 * 1000;
@@ -131,11 +131,7 @@
   }
 
   function stripTemplateColumn(template) {
-    if (typeof template !== "string") return "";
-    return template
-      .replace(/\s*\[streamRank\]\s+minmax\([^)]*\)\s*/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    return removeNamedTemplateTrack(template, "streamRank");
   }
 
   function insertTemplateColumn(template) {
@@ -202,6 +198,7 @@
     albumColumnIndex,
     totalColumnCount,
     hiddenColumnIndexes = [],
+    compactColumnIndexes = [],
   ) {
     const cleanTemplate = stripTemplateColumn(template);
     const albumLine =
@@ -218,6 +215,26 @@
       playlistTemplate = removeNamedTemplateTrack(
         playlistTemplate,
         getTemplateLineForColumn(columnIndex, totalColumnCount),
+      );
+    });
+
+    new Set(compactColumnIndexes).forEach((columnIndex) => {
+      if (
+        columnIndex < 0 ||
+        columnIndex === albumColumnIndex ||
+        hiddenColumnIndexes.includes(columnIndex)
+      ) {
+        return;
+      }
+
+      const lineName = getTemplateLineForColumn(
+        columnIndex,
+        totalColumnCount,
+      );
+      playlistTemplate = replaceNamedTemplateTrack(
+        playlistTemplate,
+        lineName,
+        `[${lineName}] var(--${lineName}-min-width, 120px)`,
       );
     });
 
@@ -895,6 +912,11 @@
           font-weight: 400;
         }
 
+        [data-gem-sort-grid="true"] .spotify-gem-sort-header > *,
+        [data-gem-sort-grid="true"] .spotify-gem-sort-cell > * {
+          margin-inline-end: 0 !important;
+        }
+
         [data-gem-sort-grid="true"] .spotify-gem-sort-plays {
           flex: 1 0 110px;
           min-width: 110px;
@@ -1181,6 +1203,7 @@
       albumColumnIndex,
       hiddenColumnIndexes,
       nativeColumnCount,
+      compactColumnIndexes,
     ) {
       const inlineTemplate = grid.style.getPropertyValue("--grid-template-columns");
       const computedTemplate = browserRoot
@@ -1201,6 +1224,7 @@
         albumColumnIndex,
         nativeColumnCount,
         hiddenColumnIndexes,
+        compactColumnIndexes,
       );
 
       if (
@@ -2876,6 +2900,7 @@
         replacementColumnIndex,
         hiddenColumnIndexes,
         nativeColumnCount,
+        [dateColumnIndex],
       );
 
       grid

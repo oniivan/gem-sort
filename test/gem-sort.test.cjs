@@ -114,9 +114,18 @@ test("the grid template insertion is idempotent and reversible", () => {
     "[index] var(--index-column-width, 16px) [first] minmax(var(--first-min-width), 4fr) [var1] minmax(120px, 2fr) [last] minmax(120px, 1fr)";
   const inserted = insertTemplateColumn(original);
 
-  assert.match(inserted, /\[streamRank\] minmax\(220px, 1\.65fr\) \[last\]/);
+  assert.match(inserted, /\[streamRank\] 220px \[last\]/);
   assert.equal(insertTemplateColumn(inserted), inserted);
   assert.equal(stripTemplateColumn(inserted), original);
+  assert.equal(
+    stripTemplateColumn(
+      original.replace(
+        "[last]",
+        "[streamRank] minmax(220px, 1.65fr) [last]",
+      ),
+    ),
+    original,
+  );
 });
 
 test("the playlist template replaces the Album track", () => {
@@ -129,18 +138,38 @@ test("the playlist template replaces the Album track", () => {
   assert.match(withoutAlbum, /\[var2\]/);
   assert.doesNotMatch(playlist, /\[var1\]/);
   assert.match(playlist, /\[var2\]/);
-  assert.match(playlist, /\[streamRank\] minmax\(220px, 1\.65fr\)/);
+  assert.match(playlist, /\[streamRank\] 220px/);
   assert.ok(playlist.indexOf("[streamRank]") < playlist.indexOf("[var2]"));
+});
+
+test("the playlist template right-packs metrics and Date added", () => {
+  const original =
+    "[index] var(--index-column-width, 16px) [first] minmax(var(--first-min-width), var(--first-max-width, 4fr)) [var1] minmax(var(--var1-min-width), var(--var1-max-width, 2fr)) [var2] minmax(var(--var2-min-width), var(--var2-max-width, 2fr)) [last] minmax(var(--last-min-width), var(--last-max-width, 1fr))";
+  const playlist = buildPlaylistTemplate(original, 2, 5, [2], [3]);
+
+  assert.match(playlist, /\[streamRank\] 220px/);
+  assert.match(
+    playlist,
+    /\[var2\] var\(--var2-min-width, 120px\) \[last\]/,
+  );
+  assert.match(
+    playlist,
+    /\[first\] minmax\(var\(--first-min-width\), var\(--first-max-width, 4fr\)\)/,
+  );
+  assert.doesNotMatch(
+    playlist,
+    /\[var2\] minmax\(var\(--var2-min-width\), var\(--var2-max-width, 2fr\)\)/,
+  );
 });
 
 test("the playlist template omits an empty Date added track", () => {
   const original =
     "[index] 16px [first] minmax(180px, 4fr) [var1] minmax(120px, 2fr) [var2] minmax(120px, 2fr) [last] minmax(120px, 1fr)";
-  const playlist = buildPlaylistTemplate(original, 2, 5, [2, 3]);
+  const playlist = buildPlaylistTemplate(original, 2, 5, [2, 3], [3]);
 
   assert.doesNotMatch(playlist, /\[var1\]/);
   assert.doesNotMatch(playlist, /\[var2\]/);
-  assert.match(playlist, /\[streamRank\] minmax\(220px, 1\.65fr\)/);
+  assert.match(playlist, /\[streamRank\] 220px/);
 });
 
 test("metric sort clicks cycle through both directions and Spotify order", () => {
