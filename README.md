@@ -53,7 +53,9 @@ expects. These are private interfaces and can change between Spotify releases.
 Click either half of the column header:
 
 - **Plays:** highest to lowest → lowest to highest → Spotify order
-- **Top 10:** `#1` to `#10` → `#10` to `#1` → Spotify order
+- **Top 10:** `#1` to `#10` → `#10` to `#1` → Spotify order. Within
+  every rank—and within the unranked group—tracks are ordered by Plays from
+  highest to lowest.
 
 This is a temporary **view sort**. It loads and holds the current playlist
 result in memory, then serves that result back to Spotify in sorted order. It
@@ -65,7 +67,8 @@ Spotify's MetadataService for uncached counts in bulk before using album and
 track GraphQL fallbacks. A Top 10 sort deduplicates primary artists and uses a
 bounded adaptive worker pool: up to 10 requests for small sets, 16 for medium
 sets, and 20 for large sets. Row lookups and bulk sorting share the same
-20-request ceiling.
+20-request ceiling. Play counts load in parallel with those artist requests,
+so compound Top 10 ordering does not add a second sequential loading phase.
 
 While the sort is active:
 

@@ -24,7 +24,7 @@
 })(typeof window !== "undefined" ? window : null, function createStreamRankApi() {
   "use strict";
 
-  const VERSION = "0.5.1";
+  const VERSION = "0.5.2";
   const GLOBAL_KEY = "__spotifyGemSort";
   const STYLE_ID = "spotify-gem-sort-style";
   const GRID_SELECTOR =
@@ -549,8 +549,17 @@
     return ARTIST_REQUEST_CONCURRENCY_LIMIT;
   }
 
-  function sortMetricRecords(records, direction) {
+  function sortMetricRecords(
+    records,
+    direction,
+    {
+      secondaryDirection = "desc",
+      secondaryKey = null,
+    } = {},
+  ) {
     const multiplier = direction === "desc" ? -1 : 1;
+    const secondaryMultiplier =
+      secondaryDirection === "asc" ? 1 : -1;
     return records.slice().sort((left, right) => {
       const leftMissing = left.value === null || left.value === undefined;
       const rightMissing = right.value === null || right.value === undefined;
@@ -558,6 +567,28 @@
       if (!leftMissing && left.value !== right.value) {
         return (left.value - right.value) * multiplier;
       }
+
+      if (secondaryKey) {
+        const leftSecondary = left[secondaryKey];
+        const rightSecondary = right[secondaryKey];
+        const leftSecondaryMissing =
+          leftSecondary === null || leftSecondary === undefined;
+        const rightSecondaryMissing =
+          rightSecondary === null || rightSecondary === undefined;
+        if (leftSecondaryMissing !== rightSecondaryMissing) {
+          return leftSecondaryMissing ? 1 : -1;
+        }
+        if (
+          !leftSecondaryMissing &&
+          leftSecondary !== rightSecondary
+        ) {
+          return (
+            (leftSecondary - rightSecondary) *
+            secondaryMultiplier
+          );
+        }
+      }
+
       return left.sourceIndex - right.sourceIndex;
     });
   }
@@ -2678,21 +2709,27 @@
       }
 
       const records = session.records;
+      const isCancelled = () =>
+        operationId !== sortOperationId ||
+        getCurrentPath() !== session.path;
 
-      if (key === "plays") {
+      const loadPlays = async () => {
+        if (session.loadedMetrics.has("plays")) return true;
         const counts = await resolveBulkPlayCounts(
           records.map((record) => record.info),
-          () =>
-            operationId !== sortOperationId ||
-            getCurrentPath() !== session.path,
+          isCancelled,
         );
-        if (!counts) return null;
+        if (!counts || isCancelled()) return false;
         records.forEach((record) => {
           if (record.info) {
             record.plays = counts.get(record.info.trackUri) ?? null;
           }
         });
-      } else {
+        session.loadedMetrics.add("plays");
+        return true;
+      };
+
+      const loadRanks = async () => {
         const artists = new Map();
         records.forEach((record) => {
           if (!record.info?.artistUri || record.info.isLocal) return;
@@ -2729,12 +2766,7 @@
             },
             async () => {
               while (nextArtistIndex < entries.length) {
-                if (
-                  operationId !== sortOperationId ||
-                  getCurrentPath() !== session.path
-                ) {
-                  return;
-                }
+                if (isCancelled()) return;
                 const [artistUri, group] =
                   entries[nextArtistIndex++];
                 const artist = await requestArtistTopTracks(
@@ -2751,15 +2783,22 @@
           ),
         );
         progress.durationMs = Date.now() - progress.startedAt;
+        if (isCancelled()) return false;
+        session.loadedMetrics.add("rank");
+        return true;
+      };
+
+      if (key === "plays") {
+        if (!(await loadPlays())) return null;
+      } else {
+        const [playsLoaded, ranksLoaded] = await Promise.all([
+          loadPlays(),
+          loadRanks(),
+        ]);
+        if (!playsLoaded || !ranksLoaded) return null;
       }
 
-      if (
-        operationId !== sortOperationId ||
-        getCurrentPath() !== session.path
-      ) {
-        return null;
-      }
-      session.loadedMetrics.add(key);
+      if (isCancelled()) return null;
       return selectMetricRecordValues(records, key);
     }
 
@@ -2921,6 +2960,12 @@
         session.sortedItems = sortMetricRecords(
           records,
           nextState.direction,
+          requestedKey === "rank"
+            ? {
+                secondaryDirection: "desc",
+                secondaryKey: "plays",
+              }
+            : undefined,
         ).map((record) => record.item);
         session.sortGeneration = operationId;
         session.playbackContext = null;

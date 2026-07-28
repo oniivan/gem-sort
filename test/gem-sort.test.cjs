@@ -215,6 +215,35 @@ test("metric sorting is numeric, stable, and keeps unavailable values last", () 
   );
 });
 
+test("Top 10 sorting uses descending plays within every rank", () => {
+  const records = [
+    { plays: 100, sourceIndex: 0, value: 1 },
+    { plays: 900, sourceIndex: 1, value: 2 },
+    { plays: 500, sourceIndex: 2, value: 1 },
+    { plays: null, sourceIndex: 3, value: 1 },
+    { plays: 700, sourceIndex: 4, value: null },
+    { plays: 200, sourceIndex: 5, value: null },
+    { plays: 500, sourceIndex: 6, value: 1 },
+  ];
+  const options = {
+    secondaryDirection: "desc",
+    secondaryKey: "plays",
+  };
+
+  assert.deepEqual(
+    sortMetricRecords(records, "asc", options).map(
+      (record) => record.sourceIndex,
+    ),
+    [2, 6, 0, 3, 1, 4, 5],
+  );
+  assert.deepEqual(
+    sortMetricRecords(records, "desc", options).map(
+      (record) => record.sourceIndex,
+    ),
+    [1, 2, 6, 0, 3, 4, 5],
+  );
+});
+
 test("large sorts reuse one canonical record graph across both metrics", () => {
   const source = fs.readFileSync(require.resolve("../gem-sort.js"), "utf8");
   const items = Array.from({ length: 3_000 }, (_, index) => ({
