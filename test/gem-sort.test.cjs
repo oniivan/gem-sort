@@ -15,6 +15,7 @@ const {
   extractTrackCounts,
   extractTrackInfoFromProps,
   findColumnTypeIndex,
+  findCurrentTrackIndex,
   findMethodOwner,
   findTopTrackRecord,
   fingerprintQueryOptions,
@@ -22,7 +23,9 @@ const {
   getArtistSortConcurrency,
   getCapturedPageOffset,
   getPlaybackContextUri,
+  getPlayerContextUri,
   insertTemplateColumn,
+  isGemSortPlaybackContext,
   isPlaylistPath,
   nextMetricSortState,
   normalizeTrackName,
@@ -48,6 +51,7 @@ test("runtime dataset keys match the Gem Sort CSS attribute namespace", () => {
   );
   [
     "gemSortGrid",
+    "gemSortCurrentTrack",
     "gemSortHiddenColumn",
     "gemSortSortActive",
     "gemSortSortKey",
@@ -55,6 +59,7 @@ test("runtime dataset keys match the Gem Sort CSS attribute namespace", () => {
   ].forEach((key) => assert.match(source, new RegExp(`dataset\\.${key}`)));
   [
     "data-gem-sort-grid",
+    "data-gem-sort-current-track",
     "data-gem-sort-hidden-column",
     "data-gem-sort-sort-key",
   ].forEach((attribute) => assert.match(source, new RegExp(attribute)));
@@ -518,6 +523,76 @@ test("playback context URI detection handles Spotify's supported shapes", () => 
     "spotify:playlist:2222222222222222222222",
   );
   assert.equal(getPlaybackContextUri(null), null);
+  assert.equal(
+    getPlayerContextUri({
+      context: {
+        uri: "spotify:internal:gem-sort:playlist-id:17",
+      },
+    }),
+    "spotify:internal:gem-sort:playlist-id:17",
+  );
+  assert.equal(
+    getPlayerContextUri({
+      context_uri: "spotify:playlist:1111111111111111111111",
+      context: {
+        uri: "spotify:playlist:2222222222222222222222",
+      },
+    }),
+    "spotify:playlist:1111111111111111111111",
+  );
+});
+
+test("Gem Sort playback contexts are scoped to the source playlist", () => {
+  const playlist = "spotify:playlist:1111111111111111111111";
+
+  assert.equal(
+    isGemSortPlaybackContext(
+      "spotify:internal:gem-sort:1111111111111111111111:42",
+      playlist,
+    ),
+    true,
+  );
+  assert.equal(
+    isGemSortPlaybackContext(
+      "spotify:internal:gem-sort:2222222222222222222222:42",
+      playlist,
+    ),
+    false,
+  );
+  assert.equal(
+    isGemSortPlaybackContext(playlist, playlist),
+    false,
+  );
+});
+
+test("current-row matching prefers occurrence UIDs for duplicate tracks", () => {
+  const rows = [
+    { trackUri: "spotify:track:same", uid: "occurrence-b" },
+    { trackUri: "spotify:track:other", uid: "occurrence-c" },
+    { trackUri: "spotify:track:same", uid: "occurrence-a" },
+  ];
+
+  assert.equal(
+    findCurrentTrackIndex(rows, {
+      uri: "spotify:track:same",
+      uid: "occurrence-a",
+    }),
+    2,
+  );
+  assert.equal(
+    findCurrentTrackIndex(rows, {
+      uri: "spotify:track:same",
+      uid: "offscreen-occurrence",
+    }),
+    -1,
+  );
+  assert.equal(
+    findCurrentTrackIndex(
+      rows.map(({ trackUri }) => ({ trackUri })),
+      { uri: "spotify:track:same" },
+    ),
+    0,
+  );
 });
 
 test("method owner lookup reaches inherited Spotify API methods", () => {
@@ -789,6 +864,7 @@ test("current Spotify row React props yield track, album, and primary artist", (
           item: {
             type: "track",
             uri: "spotify:track:1111111111111111111111",
+            uid: "playlist-occurrence-1",
             name: "Current Track",
             duration: {
               milliseconds: 159_000,
@@ -818,6 +894,7 @@ test("current Spotify row React props yield track, album, and primary artist", (
   };
 
   assert.deepEqual(extractTrackInfoFromProps(props), {
+    uid: "playlist-occurrence-1",
     trackUri: "spotify:track:1111111111111111111111",
     trackName: "Current Track",
     durationMs: 159_000,

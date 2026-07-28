@@ -28,6 +28,9 @@ alone, and keeps the rest of Spotify's layout familiar.
 - Keeps ties in Spotify's original order and places unavailable values last.
 - Starts new playback from an active sorted view with Shuffle off, so Next and
   Previous follow the displayed sort.
+- Keeps the currently playing track title highlighted in Spotify green while
+  that temporary sorted playback context is active, including duplicate-track
+  occurrences.
 - Keeps native drag-out behavior for adding tracks to another playlist while
   blocking reordering drops inside the temporarily sorted source playlist.
 - Retains Date added when the playlist has meaningful dates, but hides the
@@ -77,8 +80,10 @@ While the sort is active:
   would make the temporary view order ambiguous.
 - Starting playback from the playlist hands Spotify a temporary in-memory
   context containing the displayed order and starts that context with Shuffle
-  off. Next and Previous then follow the sort; Spotify's manual queue can still
-  take precedence, and Shuffle can be turned on again afterward.
+  off. Next and Previous then follow the sort, and the matching visible title
+  remains highlighted using its exact playlist occurrence ID. Spotify's manual
+  queue can still take precedence, and Shuffle can be turned on again
+  afterward.
 - Sorting alone does not alter current playback. Clearing or changing the view
   sort does not interrupt a playback context that has already started.
 
